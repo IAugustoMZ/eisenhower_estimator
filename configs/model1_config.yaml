@@ -1,0 +1,142 @@
+# ============================================================
+# Model 1 — Important Classifier
+# Hyperparameter search space and training settings
+# ============================================================
+#
+# This config controls what Optuna explores. Values here override
+# the global training defaults in config.yaml.
+#
+# Features used (in order of EDA effect size):
+#   hour_created        (Cramér's V = 0.80) — cyclical sin/cos
+#   day_of_week_created (Cramér's V = 0.47) — cyclical sin/cos
+#   project_code        (Cramér's V = 0.25) — target encoded
+#   project_category    (Cramér's V = 0.23) — binary passthrough
+#   days_until_due      (Mann-Whitney sig.) — log + scaled
+#   desc_word_count     (r = 0.08)          — log + scaled
+#   desc_char_len       (r = 0.08)          — log + scaled
+#   desc_clean          (text content)      — TF-IDF/BoW + optional LSA
+#
+# EXCLUDED features (with reason):
+#   is_overdue          — NOT available at inference time
+#   month_created       — not significant (p = 0.43)
+#   has_due_date        — constant (all tasks have due dates)
+#   days_since_created  — redundant with days_until_due
+#   urgent              — target leakage guard for Model 1
+
+training:
+  optuna_trials: 50
+  optuna_timeout_seconds: 3600    # 1 hour max
+  cv_folds: 5
+  random_state: 42
+  scoring_metric: "f1_macro"
+  test_size: 0.2
+
+# ── Model types to include in search ──────────────────────────────────────────
+# Optuna will sample from this list. Remove any to narrow the search.
+model_types:
+  - lgbm
+  - xgboost
+  - random_forest
+  - logistic
+  - voting_lgbm_rf
+  - voting_lgbm_lr
+  - voting_all
+
+# ── Preprocessor search space ─────────────────────────────────────────────────
+preprocessor:
+  scaler:
+    options: ["standard", "robust", "minmax", "none"]
+    # robust is usually best for skewed features like days_until_due
+
+  text:
+    include_options: [true, false]     # Optuna decides whether text adds value
+    vectorizer_options: ["tfidf", "bow"]
+    max_features_range: [100, 1000]    # step=100
+    ngram_max_options: [1, 2]
+    use_lsa_options: [true, false]     # LSA reduces memorization risk (recommended true)
+    n_components_range: [10, 60]       # step=10
+    min_df_range: [1, 5]
+
+  target_encoding:
+    smoothing_range: [0.1, 10.0]      # log scale
+
+# ── Feature selection (post-preprocessor, supervised) ────────────────────────
+# Applied AFTER ColumnTransformer, on the assembled feature matrix.
+# Recommended: selectkbest_f — fast, supervised, works well for mixed features.
+# selectkbest_mi captures non-linear dependencies (slower).
+# none = passthrough (best when total features are already few).
+feature_selection:
+  strategy_options: ["selectkbest_f", "selectkbest_mi", "none"]
+  k_range: [5, 40]                     # auto-capped if k > n_features
+
+# ── Dimensionality reduction (post-selector) ──────────────────────────────────
+# Applied AFTER feature selection, before classifier.
+# pca: RECOMMENDED when text features included — decorrelates LSA dims
+#      from cyclical+numeric. Tune n_components 5-40.
+# lda: aggressive — binary classification always -> 1 component. Experiment only.
+# none: RECOMMENDED default when text excluded (only ~9 features remain).
+dimensionality_reduction:
+  method_options: ["pca", "lda", "none"]
+  n_components_range: [5, 40]          # step=5; only used for pca
+
+# ── Resampling ────────────────────────────────────────────────────────────────
+# Applied ONLY to training folds (never validation/test data)
+# 3:1 imbalance is moderate — SMOTE is optional but can help class-0 recall
+resampling:
+  strategy_options: ["smote", "adasyn", "none"]
+  k_neighbors: 5
+
+# ── LightGBM search space ─────────────────────────────────────────────────────
+lgbm:
+  n_estimators_range: [100, 600]      # step=50
+  max_depth_range: [-1, 12]           # -1 = unlimited
+  learning_rate_range: [0.01, 0.3]    # log scale
+  num_leaves_range: [15, 127]
+  min_child_samples_range: [5, 50]
+  subsample_range: [0.5, 1.0]
+  colsample_bytree_range: [0.5, 1.0]
+  reg_alpha_range: [1.0e-8, 1.0]     # log scale
+  reg_lambda_range: [1.0e-8, 1.0]    # log scale
+  scale_pos_weight_range: [1.0, 5.0]  # ~3.0 for 3:1 imbalance
+
+# ── XGBoost search space ──────────────────────────────────────────────────────
+xgboost:
+  n_estimators_range: [100, 600]      # step=50
+  max_depth_range: [3, 12]
+  learning_rate_range: [0.01, 0.3]    # log scale
+  subsample_range: [0.5, 1.0]
+  colsample_bytree_range: [0.5, 1.0]
+  reg_alpha_range: [1.0e-8, 1.0]
+  reg_lambda_range: [1.0e-8, 1.0]
+  scale_pos_weight_range: [1.0, 5.0]
+
+# ── Random Forest search space ────────────────────────────────────────────────
+random_forest:
+  n_estimators_range: [100, 500]      # step=50
+  max_depth_options: [null, 5, 10, 15, 20]
+  min_samples_split_range: [2, 10]
+  min_samples_leaf_range: [1, 5]
+  max_features_options: ["sqrt", "log2", 0.5]
+  class_weight_options: ["balanced", "balanced_subsample"]
+
+# ── Logistic Regression search space ─────────────────────────────────────────
+logistic:
+  C_range: [1.0e-4, 100.0]           # log scale
+  penalty_options: ["l1", "l2"]
+  solver: "saga"                      # supports both l1 and l2
+  max_iter: 2000
+  class_weight_options: ["balanced", null]
+
+# ── Notes ─────────────────────────────────────────────────────────────────────
+notes:
+  text_memorization_risk: >
+    TF-IDF r=0.74 in EDA reflects recurring task names (e.g. "Ler newsletter Criticópolis").
+    LSA (TruncatedSVD) mitigates this by reducing to latent semantic dimensions.
+    Monitor f1_0 (not-important class) — if text helps it's a good sign.
+    If include_text=False trials match or beat include_text=True, drop text features.
+
+  leakage_guards:
+    - "is_overdue not included — depends on current date, unavailable at creation time"
+    - "urgent not included — would be target leakage for Model 1"
+    - "SafeTargetEncoder fit per fold — no leakage from project_code encoding"
+    - "ResamplerTransformer applied to training folds only"

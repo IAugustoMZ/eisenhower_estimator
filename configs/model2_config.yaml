@@ -1,0 +1,165 @@
+# ============================================================
+# Model 2 — Urgent Classifier
+# Hyperparameter search space and training settings
+# ============================================================
+#
+# This config controls what Optuna explores. Values here override
+# the global training defaults in config.yaml.
+#
+# Features used (in order of EDA effect size):
+#   project_code        (Cramér's V = 0.635) — target encoded (strongest signal)
+#   project_category    (Cramér's V = 0.423) — binary passthrough
+#   day_of_week_created (Cramér's V = 0.366) — cyclical sin/cos
+#   hour_created        (Cramér's V = 0.337) — cyclical sin/cos
+#   month_created       (Cramér's V = 0.326) — cyclical sin/cos (INCLUDED here, unlike Model 1)
+#   desc_char_len       (r = 0.291)          — scale only (no log)
+#   lead_time_bucket    (V = 0.289)          — ordinal encoded
+#   desc_word_count     (r = 0.257)          — scale only
+#   lead_time_days      (r = -0.155)         — scale only (CAN be negative)
+#   lead_time_hours     (derived)            — scale only (CAN be negative)
+#   desc_clean          (text content)       — TF-IDF/BoW + optional LSA
+#
+# EXCLUDED features (with reason):
+#   important           — target leakage guard for Model 2
+#   is_overdue          — NOT available at inference time
+#   days_until_due      — not a Model 2 feature (lead_time_* replace it)
+#   has_due_date        — constant (all tasks have due dates)
+#
+# CV Strategy: StratifiedGroupKFold (group=project_code)
+#   Rationale: urgent tasks are exclusively a Work phenomenon (project-specific).
+#   Grouping by project_code ensures each test fold contains projects entirely
+#   unseen during training — simulating the real-world deployment scenario.
+#   Fallback: folds with zero positive samples get neutral scores (no crash).
+#
+# Imbalance: 21.36:1 (95.5% not urgent, 4.5% urgent)
+#   => scale_pos_weight search range: 10–30 (centred on ~21)
+#   => SMOTE / ADASYN strongly recommended (vs Model 1 where it was optional)
+
+training:
+  optuna_trials: 50
+  optuna_timeout_seconds: 3600    # 1 hour max
+  cv_folds: 5
+  random_state: 42
+  scoring_metric: "f1_macro"
+  test_size: 0.2
+
+# ── Model types to include in search ──────────────────────────────────────────
+model_types:
+  - lgbm
+  - xgboost
+  - random_forest
+  - logistic
+  - voting_lgbm_rf
+  - voting_lgbm_lr
+  - voting_all
+
+# ── Preprocessor search space ─────────────────────────────────────────────────
+preprocessor:
+  scaler:
+    options: ["standard", "robust", "minmax", "none"]
+    # robust is strongly recommended — lead_time_days has extreme outliers (-82 days median for urgent)
+    # and several tasks have lead_time > 500 days (long tail)
+
+  text:
+    include_options: [true, false]
+    vectorizer_options: ["tfidf", "bow"]
+    max_features_range: [100, 1000]    # step=100
+    ngram_max_options: [1, 2]
+    use_lsa_options: [true, false]     # LSA recommended to reduce project-name memorisation
+    n_components_range: [10, 60]       # step=10
+    min_df_range: [1, 5]
+
+  target_encoding:
+    smoothing_range: [0.1, 10.0]      # log scale
+    # Higher smoothing (5–10) recommended: project_code V=0.635 risks memorising project identity
+
+# ── Feature selection (post-preprocessor, supervised) ────────────────────────
+feature_selection:
+  strategy_options: ["selectkbest_f", "selectkbest_mi", "none"]
+  k_range: [5, 50]                     # more features than Model 1 (11 input cols vs 8)
+
+# ── Dimensionality reduction (post-selector) ──────────────────────────────────
+dimensionality_reduction:
+  method_options: ["pca", "lda", "none"]
+  n_components_range: [5, 40]          # step=5; only used for pca
+
+# ── Resampling ────────────────────────────────────────────────────────────────
+# CRITICAL: 21.36:1 imbalance — resampling is much more important here than Model 1.
+# Only 166 positive (urgent) samples in ~3,689 total.
+# SMOTE / ADASYN applied ONLY to training folds (never validation/test data)
+resampling:
+  strategy_options: ["smote", "adasyn", "none"]
+  k_neighbors: 5    # auto-reduced if minority class < k_neighbors + 1 in a fold
+
+# ── LightGBM search space ─────────────────────────────────────────────────────
+lgbm:
+  n_estimators_range: [100, 600]      # step=50
+  max_depth_range: [-1, 12]           # -1 = unlimited
+  learning_rate_range: [0.01, 0.3]    # log scale
+  num_leaves_range: [15, 127]
+  min_child_samples_range: [5, 50]
+  subsample_range: [0.5, 1.0]
+  colsample_bytree_range: [0.5, 1.0]
+  reg_alpha_range: [1.0e-8, 1.0]     # log scale
+  reg_lambda_range: [1.0e-8, 1.0]    # log scale
+  scale_pos_weight_range: [10.0, 30.0]  # ~21 for 21.36:1 imbalance (vs 1-5 for Model 1)
+
+# ── XGBoost search space ──────────────────────────────────────────────────────
+xgboost:
+  n_estimators_range: [100, 600]      # step=50
+  max_depth_range: [3, 12]
+  learning_rate_range: [0.01, 0.3]    # log scale
+  subsample_range: [0.5, 1.0]
+  colsample_bytree_range: [0.5, 1.0]
+  reg_alpha_range: [1.0e-8, 1.0]
+  reg_lambda_range: [1.0e-8, 1.0]
+  scale_pos_weight_range: [10.0, 30.0]
+
+# ── Random Forest search space ────────────────────────────────────────────────
+random_forest:
+  n_estimators_range: [100, 500]      # step=50
+  max_depth_options: [null, 5, 10, 15, 20]
+  min_samples_split_range: [2, 10]
+  min_samples_leaf_range: [1, 5]
+  max_features_options: ["sqrt", "log2", 0.5]
+  class_weight_options: ["balanced", "balanced_subsample"]  # balanced always for extreme imbalance
+
+# ── Logistic Regression search space ─────────────────────────────────────────
+logistic:
+  C_range: [1.0e-4, 100.0]           # log scale
+  penalty_options: ["l1", "l2"]
+  solver: "saga"                      # supports both l1 and l2
+  max_iter: 2000
+  class_weight_options: ["balanced", null]
+
+# ── Notes ─────────────────────────────────────────────────────────────────────
+notes:
+  imbalance_warning: >
+    21.36:1 imbalance means only ~166 urgent samples. SMOTE creates synthetic
+    minority samples in feature space — crucial here. Monitor f1_1 (urgent class)
+    separately from f1_macro. A model predicting all "not urgent" gets f1_macro=0.48
+    but f1_1=0.0 — this is a failure mode. Target: f1_1 > 0.5 on holdout test.
+
+  group_cv_warning: >
+    StratifiedGroupKFold by project_code means some folds may have very few or
+    zero urgent samples (since urgency is project-specific). Folds with zero
+    positive samples are handled gracefully with neutral scores and a warning log.
+    If >2 folds consistently have zero positives, consider reducing cv_folds to 3.
+
+  lead_time_warning: >
+    lead_time_days and lead_time_hours CAN be negative for retroactive/recurring tasks
+    (1,239 rows, 33.6%). Do NOT log-transform these columns. _ScaleOnly transformer
+    is used instead of _LogThenScale to preserve the negative value signal.
+    RobustScaler is recommended (interquartile range is robust to outliers).
+
+  leakage_guards:
+    - "is_overdue not included — depends on current date, unavailable at creation time"
+    - "important not included — would be target leakage for Model 2"
+    - "SafeTargetEncoder fit per fold — no leakage from project_code encoding"
+    - "ResamplerTransformer applied to training folds only"
+    - "StratifiedGroupKFold tests generalisation to unseen projects"
+
+  text_risk: >
+    Top urgent text terms: treinamento, reunião, revisar, enviar — work action items.
+    These may overlap with project names (memorisation risk). LSA recommended.
+    Monitor: if trials with include_text=False match include_text=True, drop text.
