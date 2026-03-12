@@ -1,0 +1,41 @@
+database:
+  path: "C:/Users/icaro.zelioli.dev/Documents/Projects/timesheet_appointment/personal_organizer_back/database/personal_organizer.db"
+
+data:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  raw_filename: "todo_tasks.parquet"
+
+extraction:
+  table: "todo_task"
+  project_table: "project"
+  label_columns:
+    - "important"
+    - "urgent"
+  feature_columns:
+    - "id"
+    - "description"
+    - "comments"
+    - "project_id"
+    - "due_date"
+    - "created_at"
+    - "updated_at"
+    - "register_timesheet"
+    - "completed_date"
+
+mlflow:
+  tracking_uri: "sqlite:///mlflow.db"
+  experiment_name_model1: "important-classifier"
+  experiment_name_model2: "urgent-classifier"
+  registered_model_name_model1: "important-classifier"
+  registered_model_name_model2: "urgent-classifier"
+
+training:
+  random_seed: 42
+  cv_folds: 5
+  test_size: 0.2
+  optuna_trials: 50
+  optuna_timeout_seconds: 3600   # 1 hour max
+  scoring_metric: "f1_macro"
+
+models_dir: "models"

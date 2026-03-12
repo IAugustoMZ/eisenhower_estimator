@@ -1,0 +1,9 @@
+eisen_mat_env
+docs
+data/processed
+data/raw
+
+__pycache__
+
+# Ignore model files
+mlruns

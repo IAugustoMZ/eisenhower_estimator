@@ -1,0 +1,39 @@
+# Core data
+pandas>=2.0.0
+pyarrow>=14.0.0
+pyyaml>=6.0.0
+
+# Logging
+loguru>=0.7.0
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.13.0
+
+# Stats
+scipy>=1.11.0
+
+# ML — base
+scikit-learn>=1.3.0
+imbalanced-learn>=0.11.0
+
+# ML — boosting
+lightgbm>=4.1.0
+xgboost>=2.0.0
+
+# ML — encoding
+category-encoders>=2.6.0
+
+# ML — text
+nltk>=3.8.0
+wordcloud>=1.9.0
+
+# MLOps
+mlflow>=2.10.0
+
+# Hyperparameter optimization
+optuna>=3.5.0
+optuna-integration[lightgbm]>=3.5.0
+
+# Pydantic v2
+pydantic>=2.10.0

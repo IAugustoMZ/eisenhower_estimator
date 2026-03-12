@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \":*)",
+      "Bash(source eisen_mat_env/Scripts/activate)",
+      "Bash(python -c \"import matplotlib, seaborn, scipy, sklearn, wordcloud, nltk; print\\(''All imports OK''\\)\")",
+      "Bash(python notebooks/eda_important.py)",
+      "Bash(python notebooks/eda_urgent.py)",
+      "Bash(python notebooks/train_important_model.py)",
+      "Bash(python3:*)",
+      "Bash(ls -lah /c/Users/icaro.zelioli.dev/Documents/Projects/PersonalProjects/eisenhower_estimator/src/transformers/*.py)"
+    ]
+  }
+}
