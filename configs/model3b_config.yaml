@@ -1,0 +1,114 @@
+# ============================================================
+# Model 3b — Time Bucket Classifier
+# Hyperparameter search space and training settings
+# ============================================================
+#
+# Classifies tasks into 6 duration buckets:
+#   ≤2 min | 3–5 min | 6–10 min | 11–30 min | 31–60 min | >60 min
+#
+# Uses the same feature set as Model 3 (time spent regressor) but
+# treats prediction as a multiclass classification (6 classes).
+#
+# Class distribution (1307 samples):
+#   ≤2 min   : 189 (14.5%)
+#   3–5 min  : 466 (35.6%)
+#   6–10 min : 484 (37.0%)
+#   11–30 min: 121 ( 9.3%)
+#   31–60 min:  26 ( 2.0%)
+#   >60 min  :  21 ( 1.6%)
+#
+# Significant class imbalance — SMOTE and class_weight='balanced' explored.
+#
+# Features (14 total — same as Model 3 iteration-2):
+#   day_of_week, project_code, task_type, has_number, is_repeated_task,
+#   task_freq, task_cv, desc_char_len, desc_clean,
+#   task_type_x_repeated, is_long_project, log_task_freq,
+#   desc_has_time_ref, task_median_duration
+#
+# CV Strategy: StratifiedGroupKFold (group=project_code, stratify=bucket_int)
+# Metric: macro F1 (maximise) — penalises poor minority-class recall.
+
+training:
+  optuna_trials: 100
+  optuna_timeout_seconds: 3600    # 1 hour max
+  cv_folds: 5
+  random_state: 42
+  scoring_metric: "f1_macro"
+  test_size: 0.2
+
+# ── Model types ──────────────────────────────────────────────────────────────
+model_types:
+  - lgbm
+  - xgboost
+  - random_forest
+  - logistic
+  - voting_lgbm_rf
+  - voting_lgbm_lr
+  - voting_all
+
+# ── Preprocessor ──────────────────────────────────────────────────────────────
+preprocessor:
+  scaler:
+    options: ["standard", "robust", "minmax", "none"]
+  text:
+    include_options: [true, false]
+    vectorizer_options: ["tfidf", "bow"]
+    max_features_range: [100, 1000]
+    ngram_max_options: [1, 2]
+    use_lsa_options: [true, false]
+    n_components_range: [10, 60]
+    min_df_range: [1, 5]
+  target_encoding:
+    smoothing_range: [0.1, 10.0]
+
+# ── Feature selection ─────────────────────────────────────────────────────────
+feature_selection:
+  strategy_options: ["selectkbest_f", "selectkbest_mi", "none"]
+  k_range: [5, 40]
+
+# ── Dimensionality reduction ─────────────────────────────────────────────────
+dimensionality_reduction:
+  method_options: ["pca", "lda", "none"]
+  n_components_range: [3, 40]
+
+# ── Resampling ────────────────────────────────────────────────────────────────
+resampling:
+  strategy_options: ["smote", "none"]
+
+# ── LightGBM ─────────────────────────────────────────────────────────────────
+lgbm:
+  n_estimators_range: [100, 600]
+  max_depth_range: [-1, 12]
+  learning_rate_range: [0.01, 0.3]
+  num_leaves_range: [15, 127]
+  min_child_samples_range: [5, 50]
+  subsample_range: [0.5, 1.0]
+  colsample_bytree_range: [0.5, 1.0]
+  reg_alpha_range: [1.0e-8, 1.0]
+  reg_lambda_range: [1.0e-8, 1.0]
+  class_weight_options: ["balanced", null]
+
+# ── XGBoost ───────────────────────────────────────────────────────────────────
+xgboost:
+  n_estimators_range: [100, 600]
+  max_depth_range: [3, 12]
+  learning_rate_range: [0.01, 0.3]
+  subsample_range: [0.5, 1.0]
+  colsample_bytree_range: [0.5, 1.0]
+  reg_alpha_range: [1.0e-8, 1.0]
+  reg_lambda_range: [1.0e-8, 1.0]
+
+# ── Random Forest ─────────────────────────────────────────────────────────────
+random_forest:
+  n_estimators_range: [100, 500]
+  max_depth_options: [null, 5, 10, 15, 20]
+  min_samples_split_range: [2, 10]
+  min_samples_leaf_range: [1, 5]
+  max_features_options: ["sqrt", "log2", 0.5]
+  class_weight_options: ["balanced", "balanced_subsample"]
+
+# ── Logistic Regression ──────────────────────────────────────────────────────
+logistic:
+  C_range: [1.0e-4, 100.0]
+  penalty_options: ["l1", "l2"]
+  class_weight_options: ["balanced", null]

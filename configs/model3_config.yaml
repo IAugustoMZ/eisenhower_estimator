@@ -1,0 +1,161 @@
+# ============================================================
+# Model 3 — Time Spent Regressor
+# Hyperparameter search space and training settings
+# ============================================================
+#
+# This config controls what Optuna explores for the duration
+# regression model. Values here override the global training
+# defaults in config.yaml.
+#
+# Target: log1p(duration_minutes) — continuous, right-skewed.
+# Predictions converted back via np.expm1().
+#
+# Features used (in order of EDA effect size):
+#   task_type           (η² = 0.296 — large effect)  — ordinal by median duration
+#   has_number          (ρ = -0.315, p = 4.3e-30)    — binary passthrough
+#   project_code        (η² = 0.021, p = 1.8e-6)     — target-encoded (on log_duration)
+#   task_freq           (ρ = -0.131, p = 2.2e-6)      — log1p + scaled
+#   task_cv             (ρ = -0.258, p = 2.3e-21)     — scaled; imputed for unseen tasks
+#   is_repeated_task    (ρ = -0.118, p = 2e-5)        — binary passthrough
+#   day_of_week         (η² = 0.010, p = 4.3e-3)      — cyclical sin/cos
+#   desc_char_len       (ρ = +0.081, p = 3.4e-3)      — log1p + scaled
+#   desc_clean          (max |ρ| = 0.47 for TF-IDF)   — TF-IDF/BoW + optional LSA
+#
+# EXCLUDED features (with reason):
+#   project_category    — p = 0.31, subsumed by project_code
+#   is_weekend          — p = 0.31, not significant
+#   month               — p = 0.070, not significant at α=0.05
+#   quarter             — p = 0.232, not significant
+#   week_of_year        — p = 0.041, borderline noise
+#   desc_word_count     — p = 0.156, not significant
+#   project_name        — redundant with project_code
+#   date                — temporal; creates leakage if split is not temporal
+#
+# CV Strategy: StratifiedGroupKFold (group=project_code, stratify=duration_bucket)
+#   Rationale: prevents project-level leakage — especially SBM bimodality
+#   where SBM long tasks in train could inflate test performance.
+#   Fallback: if a fold has <2 unique target values, skip gracefully.
+#
+# Metric: RMSE on log scale (minimize). Secondary: MAE in original minutes, R².
+
+training:
+  optuna_trials: 50
+  optuna_timeout_seconds: 3600    # 1 hour max
+  cv_folds: 5
+  random_state: 42
+  scoring_metric: "rmse_log"
+  test_size: 0.2
+
+# ── Model types to include in search ──────────────────────────────────────────
+model_types:
+  - lgbm
+  - xgboost
+  - random_forest
+  - ridge
+  - voting_lgbm_rf
+  - voting_lgbm_ridge
+  - voting_all
+
+# ── Preprocessor search space ─────────────────────────────────────────────────
+preprocessor:
+  scaler:
+    options: ["standard", "robust", "minmax", "none"]
+    # robust recommended: task_freq and desc_char_len have outliers
+
+  text:
+    include_options: [true, false]
+    vectorizer_options: ["tfidf", "bow"]
+    max_features_range: [100, 1000]    # step=100
+    ngram_max_options: [1, 2]
+    use_lsa_options: [true, false]     # LSA recommended to reduce memorisation
+    n_components_range: [10, 60]       # step=10
+    min_df_range: [1, 5]
+
+  target_encoding:
+    smoothing_range: [0.1, 10.0]      # log scale
+    # Target = log_duration (continuous), not binary. SafeTargetEncoder handles this.
+
+# ── Feature selection (post-preprocessor, supervised) ────────────────────────
+# Uses f_regression / mutual_info_regression for regression targets.
+feature_selection:
+  strategy_options: ["selectkbest_f_reg", "selectkbest_mi_reg", "none"]
+  k_range: [5, 40]
+
+# ── Dimensionality reduction (post-selector) ──────────────────────────────────
+# LDA excluded — only works for classification. PCA or none only.
+dimensionality_reduction:
+  method_options: ["pca", "none"]
+  n_components_range: [5, 40]          # step=5; only used for pca
+
+# ── LightGBM Regressor search space ───────────────────────────────────────────
+lgbm:
+  n_estimators_range: [100, 600]       # step=50
+  max_depth_range: [-1, 12]            # -1 = unlimited
+  learning_rate_range: [0.01, 0.3]     # log scale
+  num_leaves_range: [15, 127]
+  min_child_samples_range: [5, 50]
+  subsample_range: [0.5, 1.0]
+  colsample_bytree_range: [0.5, 1.0]
+  reg_alpha_range: [1.0e-8, 1.0]      # log scale
+  reg_lambda_range: [1.0e-8, 1.0]     # log scale
+
+# ── XGBoost Regressor search space ────────────────────────────────────────────
+xgboost:
+  n_estimators_range: [100, 600]       # step=50
+  max_depth_range: [3, 12]
+  learning_rate_range: [0.01, 0.3]     # log scale
+  subsample_range: [0.5, 1.0]
+  colsample_bytree_range: [0.5, 1.0]
+  reg_alpha_range: [1.0e-8, 1.0]
+  reg_lambda_range: [1.0e-8, 1.0]
+
+# ── Random Forest Regressor search space ──────────────────────────────────────
+random_forest:
+  n_estimators_range: [100, 500]       # step=50
+  max_depth_options: [null, 5, 10, 15, 20]
+  min_samples_split_range: [2, 10]
+  min_samples_leaf_range: [1, 5]
+  max_features_options: ["sqrt", "log2", 0.5]
+
+# ── Ridge Regression search space ─────────────────────────────────────────────
+ridge:
+  alpha_range: [1.0e-4, 100.0]        # log scale
+
+# ── Notes ─────────────────────────────────────────────────────────────────────
+notes:
+  target_transform: >
+    Target is log1p(duration_minutes). Predictions are converted back via
+    np.expm1(). This dampens outlier influence (max=750 min → log1p ≈ 6.6).
+    With ICC=0.695, ~70% of variance is between-task (predictable),
+    ~30% is within-task noise (irreducible floor for any model).
+
+  task_cv_leakage: >
+    task_cv (coefficient of variation per task) is a powerful feature (ρ=-0.258)
+    but is UNKNOWN for tasks never seen in training. At inference:
+    - If task was seen ≥2 times in training → use historical CV.
+    - If task is new → impute with the mean CV of its task_type class.
+    The TaskCVImputer transformer handles this transparently.
+
+  sbm_bimodality: >
+    SBM project has bimodal duration: 85% short (≤30 min admin) vs 15% long
+    (strategic/development tasks up to 750 min). text features (desc_clean)
+    are essential to distinguish these populations. Without text, model will
+    underpredict SBM long tasks significantly.
+
+  memorisation_risk: >
+    268 unique task descriptions with avg 4.9 occurrences each. TF-IDF can
+    memorise task-level means. LSA mitigates this by projecting to latent
+    dimensions. Monitor: if include_text=False trials are competitive,
+    text features are partially memorising and should be regularised.
+
+  small_projects: >
+    ACELIA (4), AIRDX (2), MANUF (4), PHD (1), SERV (1) — too few rows for
+    reliable target encoding. SafeTargetEncoder smoothing handles this by
+    shrinking toward global mean. StratifiedGroupKFold may exclude these
+    in some folds; the trainer logs per-project MAE for monitoring.
+
+  leakage_guards:
+    - "SafeTargetEncoder fit per fold — no leakage from project_code encoding"
+    - "task_cv imputed from task_type-level stats, not from test task history"
+    - "StratifiedGroupKFold tests generalisation to unseen projects"
+    - "duration_bucket derived from target — NOT used as input feature"
