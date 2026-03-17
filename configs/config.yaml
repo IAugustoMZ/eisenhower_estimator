@@ -27,8 +27,12 @@ mlflow:
   tracking_uri: "sqlite:///mlflow.db"
   experiment_name_model1: "important-classifier"
   experiment_name_model2: "urgent-classifier"
+  experiment_name_model3: "time-spent-regressor"
+  experiment_name_model3b: "time-bucket-classifier"
   registered_model_name_model1: "important-classifier"
   registered_model_name_model2: "urgent-classifier"
+  registered_model_name_model3: "time-spent-regressor"
+  registered_model_name_model3b: "time-bucket-classifier"
 
 training:
   random_seed: 42

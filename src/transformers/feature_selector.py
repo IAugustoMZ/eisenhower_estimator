@@ -4,12 +4,15 @@ Applies supervised feature selection after the ColumnTransformer, on the full
 assembled feature matrix. Operates on numpy arrays (post-preprocessing output).
 
 Supported strategies:
-  - 'selectkbest_f'  → SelectKBest with f_classif (ANOVA F-statistic)
-  - 'selectkbest_mi' → SelectKBest with mutual_info_classif
-  - 'none'           → passthrough (no selection)
+  - 'selectkbest_f'      → SelectKBest with f_classif (ANOVA F-statistic) [classification]
+  - 'selectkbest_mi'     → SelectKBest with mutual_info_classif [classification]
+  - 'selectkbest_f_reg'  → SelectKBest with f_regression [regression]
+  - 'selectkbest_mi_reg' → SelectKBest with mutual_info_regression [regression]
+  - 'none'               → passthrough (no selection)
 
-Recommended: 'selectkbest_f' — fast, supervised, well-suited for mixed
-numeric + encoded features. mutual_info is slower but captures non-linear deps.
+Recommended: 'selectkbest_f' / 'selectkbest_f_reg' — fast, supervised,
+well-suited for mixed numeric + encoded features.
+mutual_info variants are slower but capture non-linear deps.
 
 Placement: AFTER ColumnTransformer, BEFORE DimensionalityReducerTransformer.
 
@@ -25,11 +28,17 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.feature_selection import (
     SelectKBest,
     f_classif,
+    f_regression,
     mutual_info_classif,
+    mutual_info_regression,
 )
 from sklearn.utils.validation import check_is_fitted
 
-SUPPORTED_STRATEGIES = ("selectkbest_f", "selectkbest_mi", "none")
+SUPPORTED_STRATEGIES = (
+    "selectkbest_f", "selectkbest_mi",
+    "selectkbest_f_reg", "selectkbest_mi_reg",
+    "none",
+)
 
 
 class FeatureSelectorTransformer(BaseEstimator, TransformerMixin):
@@ -88,10 +97,13 @@ class FeatureSelectorTransformer(BaseEstimator, TransformerMixin):
             )
             effective_k = n_features
 
-        if self.strategy == "selectkbest_f":
-            score_func = f_classif
-        else:
-            score_func = mutual_info_classif
+        _SCORE_FUNCS = {
+            "selectkbest_f": f_classif,
+            "selectkbest_mi": mutual_info_classif,
+            "selectkbest_f_reg": f_regression,
+            "selectkbest_mi_reg": mutual_info_regression,
+        }
+        score_func = _SCORE_FUNCS[self.strategy]
 
         self._selector = SelectKBest(score_func=score_func, k=effective_k)
         self._selector.fit(X_arr, y)
