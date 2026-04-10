@@ -18,9 +18,10 @@
 import warnings
 warnings.filterwarnings("ignore")
 
-import os, re, string
+import hashlib, os, re, string, yaml
 from pathlib import Path
 from collections import Counter
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -42,18 +43,48 @@ for resource in ["stopwords", "punkt", "punkt_tab", "rslp"]:
     except LookupError:
         nltk.download(resource, quiet=True)
 
-# -- Paths -------------------------------------------------------------------
-ROOT     = Path(__file__).resolve().parent.parent
-DATA_RAW = ROOT / "data" / "raw" / "todo_tasks.parquet"
-FIG_DIR  = ROOT / "docs" / "figures" / "urgent"
+# -- Config (single source of truth for all paths and data version) ----------
+ROOT        = Path(__file__).resolve().parent.parent
+_cfg_path   = ROOT / "configs" / "config.yaml"
+try:
+    with open(_cfg_path) as _f:
+        _cfg = yaml.safe_load(_f)
+    DATA_VERSION = _cfg.get("data", {}).get("version", "unknown")
+    _fig_cfg     = _cfg.get("eda", {})
+    _DPI         = _fig_cfg.get("dpi", 120)
+    _FIG_W       = _fig_cfg.get("fig_width", 12)
+    _FIG_H       = _fig_cfg.get("fig_height", 6)
+    _REPORTS_DIR = ROOT / _cfg.get("eda", {}).get("reports_dir", "docs")
+    _FIGS_BASE   = ROOT / _cfg.get("eda", {}).get("figures_dir", "docs/figures")
+except Exception as _e:
+    print(f"WARNING: could not load config — using defaults: {_e}")
+    DATA_VERSION = "unknown"
+    _DPI, _FIG_W, _FIG_H = 120, 12, 6
+    _REPORTS_DIR = ROOT / "docs"
+    _FIGS_BASE   = ROOT / "docs" / "figures"
+
+DATA_RAW = ROOT / _cfg.get("data", {}).get("raw_dir", "data/raw") / _cfg.get("data", {}).get("raw_filename", "todo_tasks.parquet")
+FIG_DIR  = _FIGS_BASE / "urgent"
 FIG_DIR.mkdir(parents=True, exist_ok=True)
+_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# -- Versioned figure helper: saves <name>_<data_version>.png AND <name>.png --
+def _savefig(name: str, fig=None) -> None:
+    """Save figure to FIG_DIR as both versioned and canonical filenames."""
+    _fig = fig or plt.gcf()
+    stem = name.replace(".png", "")
+    versioned = FIG_DIR / f"{stem}_{DATA_VERSION}.png"
+    canonical = FIG_DIR / f"{stem}.png"
+    for _p in [versioned, canonical]:
+        _fig.savefig(_p, dpi=_DPI, bbox_inches="tight")
+    print(f"Saved: {canonical.name}  (versioned: {versioned.name})")
 
 # -- Plot style --------------------------------------------------------------
 sns.set_theme(style="whitegrid", palette="muted", font_scale=1.1)
 PALETTE      = {0: "#2196F3", 1: "#E53935"}    # blue = not urgent, red = urgent
 PALETTE_STR  = {"0": "#2196F3", "1": "#E53935"} # string keys for seaborn categorical axis
 
-print("Setup complete.")
+print(f"Setup complete.  data_version={DATA_VERSION}")
 print(f"Data path : {DATA_RAW}")
 print(f"Figures   : {FIG_DIR}")
 
@@ -136,9 +167,8 @@ axes[1].pie(
 axes[1].set_title("Class Distribution — Proportion")
 
 plt.tight_layout()
-plt.savefig(FIG_DIR / "01_target_distribution.png", dpi=150, bbox_inches="tight")
+_savefig("01_target_distribution")
 plt.show()
-print("Saved: 01_target_distribution.png")
 
 # %% [markdown]
 # ## 3. Feature Engineering
@@ -247,9 +277,8 @@ ax.set_title(f"Urgent Rate by Project  (Cramér's V={cramers_v_proj:.3f})")
 ax.legend(loc="lower right")
 ax.xaxis.set_major_formatter(mticker.PercentFormatter())
 plt.tight_layout()
-plt.savefig(FIG_DIR / "02_project_vs_urgent.png", dpi=150, bbox_inches="tight")
+_savefig("02_project_vs_urgent")
 plt.show()
-print("Saved: 02_project_vs_urgent.png")
 
 # %% [markdown]
 # ### 4.2 project_category (Personal vs Work) vs urgent
@@ -273,7 +302,7 @@ ax.set_title(f"Personal vs Work — Urgent Count  (Cramér's V={cramers_v_cat:.3
 ax.set_ylabel("Count")
 ax.legend(["Not Urgent", "Urgent"])
 plt.tight_layout()
-plt.savefig(FIG_DIR / "03_category_vs_urgent.png", dpi=150, bbox_inches="tight")
+_savefig("03_category_vs_urgent")
 plt.show()
 print("Saved: 03_category_vs_urgent.png")
 
@@ -342,7 +371,7 @@ axes[1].legend()
 plt.suptitle(f"lead_time_days by urgent class  (Mann-Whitney p={p_u_lead:.2e}, r={r_lead:.3f})",
              fontsize=11, y=1.01)
 plt.tight_layout()
-plt.savefig(FIG_DIR / "04_lead_time_vs_urgent.png", dpi=150, bbox_inches="tight")
+_savefig("04_lead_time_vs_urgent")
 plt.show()
 print("Saved: 04_lead_time_vs_urgent.png")
 
@@ -378,9 +407,8 @@ ax.set_xlabel("Lead Time Bucket")
 ax.yaxis.set_major_formatter(mticker.PercentFormatter())
 ax.legend(loc="lower right")
 plt.tight_layout()
-plt.savefig(FIG_DIR / "05_lead_time_bucket_vs_urgent.png", dpi=150, bbox_inches="tight")
+_savefig("05_lead_time_bucket_vs_urgent")
 plt.show()
-print("Saved: 05_lead_time_bucket_vs_urgent.png")
 
 # %% [markdown]
 # ### 5.3 day_of_week_created vs urgent
@@ -406,9 +434,8 @@ ax.set_xlabel("Day of Week (task created)")
 ax.yaxis.set_major_formatter(mticker.PercentFormatter())
 ax.legend(loc="lower right")
 plt.tight_layout()
-plt.savefig(FIG_DIR / "06_dow_vs_urgent.png", dpi=150, bbox_inches="tight")
+_savefig("06_dow_vs_urgent")
 plt.show()
-print("Saved: 06_dow_vs_urgent.png")
 
 # %% [markdown]
 # ### 5.4 month_created vs urgent
@@ -430,9 +457,8 @@ ax.set_ylabel("Percentage (%)")
 ax.set_xlabel("Month (task created)")
 ax.yaxis.set_major_formatter(mticker.PercentFormatter())
 plt.tight_layout()
-plt.savefig(FIG_DIR / "07_month_vs_urgent.png", dpi=150, bbox_inches="tight")
+_savefig("07_month_vs_urgent")
 plt.show()
-print("Saved: 07_month_vs_urgent.png")
 
 # %% [markdown]
 # ### 5.5 hour_created vs urgent
@@ -454,9 +480,8 @@ ax.set_ylabel("Percentage (%)")
 ax.set_xlabel("Hour (task created)")
 ax.yaxis.set_major_formatter(mticker.PercentFormatter())
 plt.tight_layout()
-plt.savefig(FIG_DIR / "08_hour_vs_urgent.png", dpi=150, bbox_inches="tight")
+_savefig("08_hour_vs_urgent")
 plt.show()
-print("Saved: 08_hour_vs_urgent.png")
 
 # %% [markdown]
 # ### 5.6 lead_time_hours — fine-grained same-day urgency
@@ -488,9 +513,8 @@ if len(short_lead) > 10 and short_lead["urgent"].nunique() == 2:
     ax.set_ylabel("Density")
     ax.legend()
     plt.tight_layout()
-    plt.savefig(FIG_DIR / "09_lead_time_hours_shortlead.png", dpi=150, bbox_inches="tight")
+    _savefig("09_lead_time_hours_shortlead")
     plt.show()
-    print("Saved: 09_lead_time_hours_shortlead.png")
 else:
     r_lt_hrs, p_lt_hrs = 0.0, 1.0
     print("Insufficient data for short-lead hours analysis.")
@@ -555,9 +579,8 @@ axes[1].set_title(f"Word Count (r={r_word:.3f}, p={p_word:.2e})")
 axes[1].set_ylabel("Words")
 
 plt.tight_layout()
-plt.savefig(FIG_DIR / "10_desc_length_vs_urgent.png", dpi=150, bbox_inches="tight")
+_savefig("10_desc_length_vs_urgent")
 plt.show()
-print("Saved: 10_desc_length_vs_urgent.png")
 
 # %% [markdown]
 # ### 6.2 Top N-grams per class
@@ -593,10 +616,8 @@ for n, label in [(1, "Unigrams"), (2, "Bigrams")]:
 
     plt.suptitle(f"Top {label} by Urgent Class", fontsize=13)
     plt.tight_layout()
-    fname = f"11_top_{label.lower()}_by_class.png"
-    plt.savefig(FIG_DIR / fname, dpi=150, bbox_inches="tight")
+    _savefig(f"11_top_{label.lower()}_by_class")
     plt.show()
-    print(f"Saved: {fname}")
 
 # %% [markdown]
 # ### 6.3 TF-IDF top discriminating features
@@ -623,9 +644,8 @@ ax.axvline(0, color="black", linewidth=0.8)
 ax.set_title("TF-IDF Features — Point-Biserial r with 'urgent'")
 ax.set_xlabel("Point-Biserial r  (positive = correlated with urgent=1)")
 plt.tight_layout()
-plt.savefig(FIG_DIR / "12_tfidf_point_biserial.png", dpi=150, bbox_inches="tight")
+_savefig("12_tfidf_point_biserial")
 plt.show()
-print("Saved: 12_tfidf_point_biserial.png")
 
 # %% [markdown]
 # ### 6.4 Word Clouds per class
@@ -649,10 +669,8 @@ try:
         ax.axis("off")
         ax.set_title(f"Word Cloud — {label.replace('Not', 'Not ')}")
         plt.tight_layout()
-        fname = f"13_wordcloud_{label.lower()}.png"
-        plt.savefig(FIG_DIR / fname, dpi=150, bbox_inches="tight")
+        _savefig(f"13_wordcloud_{label.lower()}")
         plt.show()
-        print(f"Saved: {fname}")
 
 except ImportError:
     print("wordcloud not available — skipping word clouds")
@@ -687,9 +705,8 @@ fig = sns.pairplot(
     diag_kind="kde"
 )
 fig.figure.suptitle("Pairplot — Numeric Features vs Urgent", y=1.01)
-plt.savefig(FIG_DIR / "14_pairplot_numeric.png", dpi=130, bbox_inches="tight")
+_savefig("14_pairplot_numeric", fig=fig.figure)
 plt.show()
-print("Saved: 14_pairplot_numeric.png")
 
 # %% [markdown]
 # ## 8. Multivariate Analysis
@@ -714,9 +731,8 @@ ax.set_title("Median Lead Time by Category × Urgency")
 ax.set_ylabel("Median days until due")
 ax.legend(["Not Urgent", "Urgent"])
 plt.tight_layout()
-plt.savefig(FIG_DIR / "15_lead_time_by_category_urgent.png", dpi=150, bbox_inches="tight")
+_savefig("15_lead_time_by_category_urgent")
 plt.show()
-print("Saved: 15_lead_time_by_category_urgent.png")
 
 # %% [markdown]
 # ### 8.2 hour_created × lead_time_bucket heatmap — urgent rate
@@ -738,9 +754,8 @@ if pivot_heat.shape[0] > 0 and pivot_heat.shape[1] > 0:
     ax.set_ylabel("Hour of Day Created")
     ax.set_xlabel("Lead Time Bucket")
     plt.tight_layout()
-    plt.savefig(FIG_DIR / "16_heatmap_hour_leadtime_urgent.png", dpi=150, bbox_inches="tight")
+    _savefig("16_heatmap_hour_leadtime_urgent")
     plt.show()
-    print("Saved: 16_heatmap_hour_leadtime_urgent.png")
 
 # %% [markdown]
 # ### 8.3 day_of_week × lead_time_bucket — urgent rate heatmap
@@ -766,9 +781,8 @@ if pivot_heat2.shape[0] > 0:
     ax.set_ylabel("Day of Week")
     ax.set_xlabel("Lead Time Bucket")
     plt.tight_layout()
-    plt.savefig(FIG_DIR / "17_heatmap_dow_leadtime_urgent.png", dpi=150, bbox_inches="tight")
+    _savefig("17_heatmap_dow_leadtime_urgent")
     plt.show()
-    print("Saved: 17_heatmap_dow_leadtime_urgent.png")
 
 # %% [markdown]
 # ## 9. Consolidated Statistical Summary
@@ -823,9 +837,8 @@ ax.set_title("Effect Size per Feature (Cramér's V / |r|)  — Urgent target")
 ax.set_xlabel("Effect Size")
 ax.legend()
 plt.tight_layout()
-plt.savefig(FIG_DIR / "18_effect_sizes.png", dpi=150, bbox_inches="tight")
+_savefig("18_effect_sizes")
 plt.show()
-print("Saved: 18_effect_sizes.png")
 
 # %% [markdown]
 # ## 10. Label Consistency Check
@@ -914,7 +927,8 @@ for threshold in [1, 3, 7, 14, 30]:
 # ## 12. Save Processed Data
 
 # %%
-PROCESSED_PATH = ROOT / "data" / "processed" / "eda_urgent_features.parquet"
+_processed_dir = ROOT / _cfg.get("data", {}).get("processed_dir", "data/processed")
+PROCESSED_PATH = _processed_dir / "eda_urgent_features.parquet"
 PROCESSED_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 save_cols = [
@@ -928,6 +942,135 @@ save_cols = [
 df[save_cols].to_parquet(PROCESSED_PATH, index=False)
 print(f"Processed data saved to: {PROCESSED_PATH}")
 print(f"Shape: {df[save_cols].shape}")
+
+# %% [markdown]
+# ## 12b. Generate Versioned EDA Report
+
+# %%
+# -- Compute parquet SHA-256 for traceability --------------------------------
+_sha256 = "unknown"
+try:
+    _h = hashlib.sha256()
+    with open(PROCESSED_PATH, "rb") as _f:
+        for _chunk in iter(lambda: _f.read(1 << 20), b""):
+            _h.update(_chunk)
+    _sha256 = _h.hexdigest()
+except Exception as _e:
+    print(f"Warning: could not compute SHA-256: {_e}")
+
+# -- Build report content ----------------------------------------------------
+_n_total   = len(df)
+_n_urgent  = int(df["urgent"].sum())
+_n_not     = _n_total - _n_urgent
+_pct_urg   = _n_urgent / _n_total * 100
+_imbalance = _n_not / _n_urgent if _n_urgent > 0 else float("inf")
+
+_report_lines = [
+    f"# EDA Report — Model 2: Urgent Classifier",
+    f"",
+    f"**Data version**: `{DATA_VERSION}`  ",
+    f"**Report date**: {date.today().isoformat()}  ",
+    f"**Processed data SHA-256**: `{_sha256}`  ",
+    f"**Source file**: `data/processed/eda_urgent_features.parquet`  ",
+    f"",
+    f"---",
+    f"",
+    f"## Dataset",
+    f"",
+    f"| Statistic | Value |",
+    f"|---|---|",
+    f"| Total rows | {_n_total:,} |",
+    f"| Urgent (1) | {_n_urgent:,} ({_pct_urg:.1f}%) |",
+    f"| Not Urgent (0) | {_n_not:,} ({100-_pct_urg:.1f}%) |",
+    f"| Imbalance ratio (majority:minority) | {_imbalance:.1f}:1 |",
+    f"| Features saved | {len(save_cols) - 1} |",
+    f"",
+    f"---",
+    f"",
+    f"## Key EDA Findings (Effect Sizes)",
+    f"",
+]
+
+try:
+    _report_lines.append("```")
+    _report_lines.append(summary_df[["feature", "test", "effect_size", "significance"]].to_string(index=False))
+    _report_lines.append("```")
+    _report_lines.append("")
+except Exception as _e:
+    _report_lines.append(f"_(Summary table not available: {_e})_")
+    _report_lines.append("")
+
+_report_lines += [
+    f"---",
+    f"",
+    f"## Top TF-IDF Text Features",
+    f"",
+]
+try:
+    _report_lines.append("```")
+    _report_lines.append(pb_df.head(10)[["feature", "r", "p"]].to_string(index=False))
+    _report_lines.append("```")
+    _report_lines.append("")
+except Exception as _e:
+    _report_lines.append(f"_(TF-IDF analysis not available: {_e})_")
+    _report_lines.append("")
+
+_report_lines += [
+    f"---",
+    f"",
+    f"## Numeric Point-Biserial Correlations",
+    f"",
+]
+try:
+    _pb_num = pd.DataFrame(pb_numeric).sort_values("r", key=abs, ascending=False)
+    _report_lines.append("```")
+    _report_lines.append(_pb_num.to_string(index=False))
+    _report_lines.append("```")
+    _report_lines.append("")
+except Exception as _e:
+    _report_lines.append(f"_(Numeric correlations not available: {_e})_")
+    _report_lines.append("")
+
+_report_lines += [
+    f"---",
+    f"",
+    f"## Lead Time Threshold Rules",
+    f"",
+    f"| Threshold (days) | Precision (%) | Recall (%) |",
+    f"|---|---|---|",
+]
+for _t in [1, 3, 7, 14, 30]:
+    _nu = ((df["lead_time_days"] <= _t) & (df["urgent"] == 1)).sum()
+    _nt = (df["lead_time_days"] <= _t).sum()
+    _prec = _nu / _nt * 100 if _nt > 0 else 0
+    _rec  = _nu / _n_urgent * 100 if _n_urgent > 0 else 0
+    _report_lines.append(f"| <= {_t} | {_prec:.1f} | {_rec:.1f} |")
+_report_lines.append("")
+
+_report_lines += [
+    f"---",
+    f"",
+    f"## Figures",
+    f"",
+    f"See `docs/figures/urgent/` for all {len(list(FIG_DIR.glob('*.png')))} generated figures.",
+    f"",
+]
+
+_report_content = "\n".join(_report_lines)
+
+# -- Write versioned copy (never overwrites a previous version) --------------
+_versioned_name = f"eda_urgent_report_{DATA_VERSION}.md"
+_versioned_path = _REPORTS_DIR / _versioned_name
+_canonical_path = _REPORTS_DIR / "eda_urgent_report.md"
+
+for _path in [_versioned_path, _canonical_path]:
+    _path.write_text(_report_content, encoding="utf-8")
+    print(f"EDA report written to: {_path}")
+
+print(f"\nData version : {DATA_VERSION}")
+print(f"SHA-256      : {_sha256[:16]}...{_sha256[-8:]}")
+print(f"Rows saved   : {_n_total:,}")
+print(f"Imbalance    : {_imbalance:.1f}:1  (urgent={_pct_urg:.1f}%)")
 
 # %% [markdown]
 # ## 13. Feature Ranking Summary

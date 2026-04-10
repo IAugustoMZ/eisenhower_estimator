@@ -8,8 +8,11 @@ project table, and saves the result as a raw Parquet file.
 Target column: duration_minutes (time spent on the to-do task).
 """
 
+import hashlib
+import json
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -234,6 +237,53 @@ def save_parquet(df: pd.DataFrame, raw_dir: str | Path) -> Path:
     return output_path
 
 
+def _sha256(path: Path) -> str:
+    """Compute SHA-256 hex digest of a file."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def save_metadata(df: pd.DataFrame, parquet_path: Path) -> Path:
+    """
+    Write a JSON sidecar next to the parquet file with lineage information:
+      - extraction_timestamp (UTC ISO-8601)
+      - row_count
+      - date_range (earliest and latest 'date' in the dataset)
+      - project_distribution (counts per project_code)
+      - sha256 of the parquet file
+
+    This file is the lineage anchor: every downstream artifact (EDA report,
+    trained model, MLflow run) can reference it to prove data provenance.
+    """
+    metadata = {
+        "extraction_timestamp": datetime.now(timezone.utc).isoformat(),
+        "row_count": int(len(df)),
+        "date_range": {
+            "min": str(df["date"].min().date()),
+            "max": str(df["date"].max().date()),
+        },
+        "project_distribution": df["project_code"].value_counts().to_dict(),
+        "sha256": _sha256(parquet_path),
+    }
+
+    meta_path = parquet_path.with_name(
+        parquet_path.stem + "_metadata.json"
+    )
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2, default=str)
+
+    logger.success(f"Metadata written to '{meta_path}'.")
+    logger.info(
+        f"SHA-256: {metadata['sha256'][:16]}...  |  "
+        f"Rows: {metadata['row_count']}  |  "
+        f"Date range: {metadata['date_range']['min']} → {metadata['date_range']['max']}"
+    )
+    return meta_path
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -251,6 +301,7 @@ def run(config_path: str | Path = "configs/config.yaml") -> None:
         df = transform(df_raw)
         validate(df)
         output_path = save_parquet(df, raw_dir)
+        save_metadata(df, output_path)
 
         logger.success(f"Extraction complete. Output: '{output_path}'")
 

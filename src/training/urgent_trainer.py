@@ -130,6 +130,40 @@ class UrgentModelTrainer:
             logger.info(f"MLflow parent run: {parent_run.info.run_id}")
             mlflow.set_tag("model", "urgent-classifier")
             mlflow.set_tag("stage", "training")
+
+            # ── Versioning tags (data traceability) ───────────────────────────
+            _data_version = self.config.get("data", {}).get("version", "unknown")
+            mlflow.set_tag("data_version", _data_version)
+
+            _data_sha256 = "unknown"
+            try:
+                import hashlib as _hashlib
+                _h = _hashlib.sha256()
+                with open(self.data_path, "rb") as _f:
+                    for _chunk in iter(lambda: _f.read(1 << 20), b""):
+                        _h.update(_chunk)
+                _data_sha256 = _h.hexdigest()
+            except Exception as _e:
+                logger.warning(f"Could not compute data_sha256: {_e}")
+            mlflow.set_tag("data_sha256", _data_sha256)
+
+            _git_commit = "unknown"
+            try:
+                import subprocess as _sp
+                _git_commit = _sp.check_output(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    stderr=_sp.DEVNULL,
+                    text=True,
+                ).strip()
+            except Exception:
+                pass
+            mlflow.set_tag("git_commit", _git_commit)
+
+            logger.info(
+                f"Versioning tags — data_version={_data_version}  "
+                f"data_sha256={_data_sha256[:12]}...  git_commit={_git_commit}"
+            )
+
             mlflow.log_param("n_trials", n_trials)
             mlflow.log_param("cv_folds", cv_folds)
             mlflow.log_param("random_state", random_state)

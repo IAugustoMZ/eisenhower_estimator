@@ -19,8 +19,10 @@ MLflow structure:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -42,6 +44,7 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import train_test_split
 
+from src.evaluation import HybridClassifier, ModelEvaluator, RuleBasedClassifier
 from src.training.optuna_objective import (
     FEATURE_COLS,
     TARGET_COL,
@@ -121,6 +124,10 @@ class ModelTrainer:
             logger.info(f"MLflow parent run: {parent_run.info.run_id}")
             mlflow.set_tag("model", "important-classifier")
             mlflow.set_tag("stage", "training")
+            # ── Versioning tags — tie every run to its data + code snapshot ──
+            mlflow.set_tag("data_version", self.config.get("data", {}).get("version", "unknown"))
+            mlflow.set_tag("data_sha256", self._compute_file_sha256(self.data_path))
+            mlflow.set_tag("git_commit", self._get_git_commit())
             mlflow.log_param("n_trials", n_trials)
             mlflow.log_param("cv_folds", cv_folds)
             mlflow.log_param("random_state", random_state)
@@ -172,6 +179,12 @@ class ModelTrainer:
             for k, v in test_metrics.items():
                 self._safe_log_metric(f"test_{k}", v)
 
+            # ── 3-way comparison: rule-based / ML / hybrid ────────────────────
+            comparison_report = self._run_system_evaluation(
+                final_pipeline, X_test, y_test
+            )
+            result_comparison = comparison_report  # stored for return value
+
             # ── Log plots ─────────────────────────────────────────────────────
             if _MATPLOTLIB_AVAILABLE:
                 self._log_confusion_matrix(final_pipeline, X_test, y_test)
@@ -204,6 +217,7 @@ class ModelTrainer:
                 "best_trial": best_trial.number,
                 "best_cv_f1_macro": best_trial.value,
                 "test_metrics": test_metrics,
+                "comparison_report": result_comparison,
                 "model_uri": model_uri,
                 "best_config": best_config,
             }
@@ -333,6 +347,45 @@ class ModelTrainer:
             f"Best f1_macro={study.best_value:.4f}"
         )
         return study
+
+    def _run_system_evaluation(
+        self,
+        ml_pipeline,
+        X_test: pd.DataFrame,
+        y_test: np.ndarray,
+    ) -> dict:
+        """
+        Run the 3-way comparison (rule-based vs ML vs hybrid) on the holdout set.
+
+        All three classifiers receive the identical test split so metrics are
+        directly comparable. Results are logged as nested MLflow child runs
+        under the active parent run.
+        """
+        try:
+            rule_clf = RuleBasedClassifier()
+            hybrid_clf = HybridClassifier(
+                rule_classifier=rule_clf,
+                ml_model=ml_pipeline,
+            )
+            evaluator = ModelEvaluator(
+                rule_clf=rule_clf,
+                ml_clf=ml_pipeline,
+                hybrid_clf=hybrid_clf,
+            )
+            report = evaluator.evaluate(X_test, y_test, log_to_mlflow=True)
+            # Print to console for immediate visibility
+            logger.info("=== System Evaluation — Comparable Metrics ===")
+            evaluator.print_comparison_table(report)
+            # Log markdown report as artifact
+            md_report = evaluator.generate_report_text(report)
+            self._log_text_artifact(md_report, "system_comparison_report.md")
+            return report
+        except Exception as exc:
+            logger.error(
+                f"ModelTrainer: 3-way system evaluation failed: {exc}. "
+                f"Training result is still valid — this is a non-fatal error."
+            )
+            return {}
 
     def _evaluate_on_test(
         self, pipeline, X_test: pd.DataFrame, y_test: np.ndarray
@@ -523,6 +576,40 @@ class ModelTrainer:
                 logger.debug(f"Metric '{key}' already logged — skipping duplicate.")
             else:
                 logger.warning(f"Could not log metric '{key}={value}': {exc}")
+
+    @staticmethod
+    def _compute_file_sha256(path: Path) -> str:
+        """
+        Compute SHA-256 digest of a file so every MLflow run is pinned to an
+        exact data snapshot — catching silent parquet overwrites.
+        """
+        try:
+            sha = hashlib.sha256()
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    sha.update(chunk)
+            return sha.hexdigest()
+        except Exception as exc:
+            logger.warning(f"Could not compute SHA-256 for '{path}': {exc}")
+            return "unknown"
+
+    @staticmethod
+    def _get_git_commit() -> str:
+        """
+        Return the current HEAD git commit hash (short 8-char form).
+        Falls back to 'unknown' when not in a git repo or git is unavailable.
+        Best practice: every MLflow run should be reproducible from code + data;
+        the commit hash makes that lookup possible.
+        """
+        try:
+            result = subprocess.check_output(
+                ["git", "rev-parse", "--short=8", "HEAD"],
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            return result.decode().strip()
+        except Exception:
+            return "unknown"
 
     def _log_text_artifact(self, content: str, filename: str) -> None:
         with tempfile.NamedTemporaryFile(

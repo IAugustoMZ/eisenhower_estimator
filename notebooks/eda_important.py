@@ -125,7 +125,7 @@ for col in ["due_date", "created_at"]:
     df[col] = pd.to_datetime(df[col], errors="coerce")
 
 # --- Temporal features ------------------------------------------------------
-REFERENCE_DATE = pd.Timestamp("2026-03-11")   # today at time of analysis
+REFERENCE_DATE = pd.Timestamp.now().normalize()   # today at time of analysis
 
 df["days_until_due"]    = (df["due_date"] - df["created_at"]).dt.days
 df["days_since_created"] = (REFERENCE_DATE - df["created_at"]).dt.days
@@ -709,6 +709,131 @@ save_cols = [
 df[save_cols].to_parquet(PROCESSED_PATH, index=False)
 print(f"Processed data saved to: {PROCESSED_PATH}")
 print(f"Shape: {df[save_cols].shape}")
+
+# %% [markdown]
+# ## 10b. Generate Versioned EDA Report
+
+# %%
+import hashlib, yaml
+from datetime import date
+
+# -- Load data version from config -------------------------------------------
+_config_path = ROOT / "configs" / "config.yaml"
+_data_version = "unknown"
+try:
+    with open(_config_path) as _f:
+        _cfg = yaml.safe_load(_f)
+    _data_version = _cfg.get("data", {}).get("version", "unknown")
+except Exception as _e:
+    print(f"Warning: could not read data version from config: {_e}")
+
+# -- Compute parquet SHA-256 for traceability --------------------------------
+_sha256 = "unknown"
+try:
+    _h = hashlib.sha256()
+    with open(PROCESSED_PATH, "rb") as _f:
+        for _chunk in iter(lambda: _f.read(1 << 20), b""):
+            _h.update(_chunk)
+    _sha256 = _h.hexdigest()
+except Exception as _e:
+    print(f"Warning: could not compute SHA-256: {_e}")
+
+# -- Build report content ----------------------------------------------------
+_n_total = len(df)
+_n_important = int(df["important"].sum())
+_n_not_important = _n_total - _n_important
+_pct_important = _n_important / _n_total * 100
+
+_report_lines = [
+    f"# EDA Report — Model 1: Important Classifier",
+    f"",
+    f"**Data version**: `{_data_version}`  ",
+    f"**Report date**: {date.today().isoformat()}  ",
+    f"**Processed data SHA-256**: `{_sha256}`  ",
+    f"**Source file**: `data/processed/eda_important_features.parquet`  ",
+    f"",
+    f"---",
+    f"",
+    f"## Dataset",
+    f"",
+    f"| Statistic | Value |",
+    f"|---|---|",
+    f"| Total rows | {_n_total:,} |",
+    f"| Important (1) | {_n_important:,} ({_pct_important:.1f}%) |",
+    f"| Not Important (0) | {_n_not_important:,} ({100-_pct_important:.1f}%) |",
+    f"| Class ratio (positive:negative) | {_n_important/_n_not_important:.2f}:1 |",
+    f"| Features saved | {len(save_cols) - 1} |",
+    f"",
+    f"---",
+    f"",
+    f"## Key EDA Findings (Effect Sizes)",
+    f"",
+]
+
+# Append summary table if available
+try:
+    _report_lines.append("```")
+    _report_lines.append(summary_df[["feature", "test", "effect_size", "significance"]].to_string(index=False))
+    _report_lines.append("```")
+    _report_lines.append("")
+except Exception as _e:
+    _report_lines.append(f"_(Summary table not available: {_e})_")
+    _report_lines.append("")
+
+_report_lines += [
+    f"---",
+    f"",
+    f"## Top TF-IDF Text Features",
+    f"",
+]
+try:
+    _report_lines.append("```")
+    _report_lines.append(pb_df.head(10)[["feature", "r", "p"]].to_string(index=False))
+    _report_lines.append("```")
+    _report_lines.append("")
+except Exception as _e:
+    _report_lines.append(f"_(TF-IDF analysis not available: {_e})_")
+    _report_lines.append("")
+
+_report_lines += [
+    f"---",
+    f"",
+    f"## Numeric Point-Biserial Correlations",
+    f"",
+]
+try:
+    _pb_num = pd.DataFrame(pb_numeric).sort_values("r", key=abs, ascending=False)
+    _report_lines.append("```")
+    _report_lines.append(_pb_num.to_string(index=False))
+    _report_lines.append("```")
+    _report_lines.append("")
+except Exception as _e:
+    _report_lines.append(f"_(Numeric correlations not available: {_e})_")
+    _report_lines.append("")
+
+_report_lines += [
+    f"---",
+    f"",
+    f"## Figures",
+    f"",
+    f"See `docs/figures/important/` for all {len(list(FIG_DIR.glob('*.png')))} generated figures.",
+    f"",
+]
+
+_report_content = "\n".join(_report_lines)
+
+# -- Write versioned copy (never overwrites the previous canonical report) ---
+_versioned_name = f"eda_important_report_{_data_version}.md"
+_versioned_path = ROOT / "docs" / _versioned_name
+_canonical_path = ROOT / "docs" / "eda_important_report.md"
+
+for _path in [_versioned_path, _canonical_path]:
+    _path.write_text(_report_content, encoding="utf-8")
+    print(f"EDA report written to: {_path}")
+
+print(f"\nData version : {_data_version}")
+print(f"SHA-256      : {_sha256[:16]}...{_sha256[-8:]}")
+print(f"Rows saved   : {_n_total:,}")
 
 # %% [markdown]
 # ## 11. Feature Ranking Summary

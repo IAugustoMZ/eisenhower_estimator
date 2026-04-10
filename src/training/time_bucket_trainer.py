@@ -141,6 +141,32 @@ class TimeBucketTrainer:
             logger.info(f"MLflow parent run: {parent_run.info.run_id}")
             mlflow.set_tag("model", "time-bucket-classifier")
             mlflow.set_tag("stage", "training")
+            # ── Versioning tags ───────────────────────────────────────────
+            data_version = self.config["data"].get("version", "unknown")
+            mlflow.set_tag("data_version", data_version)
+            mlflow.set_tag(
+                "config_version",
+                self.model_config.get("config_version", "unknown"),
+            )
+            # SHA-256 of processed parquet (lineage anchor)
+            if self.data_path.exists():
+                import hashlib
+                h = hashlib.sha256()
+                with open(self.data_path, "rb") as _f:
+                    for _chunk in iter(lambda: _f.read(65536), b""):
+                        h.update(_chunk)
+                mlflow.set_tag("data_sha256", h.hexdigest())
+            # Short git commit hash
+            try:
+                import subprocess
+                _git_hash = subprocess.check_output(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    stderr=subprocess.DEVNULL,
+                ).decode().strip()
+                mlflow.set_tag("git_commit", _git_hash)
+            except Exception:
+                mlflow.set_tag("git_commit", "unknown")
+            # ─────────────────────────────────────────────────────────────
             mlflow.log_param("n_trials", n_trials)
             mlflow.log_param("cv_folds", cv_folds)
             mlflow.log_param("random_state", random_state)
@@ -226,6 +252,9 @@ class TimeBucketTrainer:
             )
             for k, v in test_metrics.items():
                 if isinstance(v, (int, float)):
+                    # Skip human-readable Unicode keys — MLflow only gets the safe keys
+                    if any(c in k for c in ("≤", "–", ">", "–")):
+                        continue
                     self._safe_log_metric(f"test_{k}", v)
 
             # ── Log plots and reports ─────────────────────────────────────
@@ -471,13 +500,20 @@ class TimeBucketTrainer:
             "accuracy": accuracy_score(y_test, y_pred),
         }
 
-        # Per-class F1
+        # Per-class F1 — use MLflow-safe metric keys (alphanumeric + _ only)
+        # BUCKET_ORDER labels contain Unicode (≤, –, >) which MLflow rejects.
+        _safe_bucket_keys = [
+            "le2min", "3to5min", "6to10min", "11to30min", "31to60min", "gt60min"
+        ]
         f1_per_class = f1_score(
             y_test, y_pred, average=None, zero_division=0
         )
         for i, f1_val in enumerate(f1_per_class):
+            safe_key = _safe_bucket_keys[i] if i < len(_safe_bucket_keys) else f"class_{i}"
             label = BUCKET_ORDER[i] if i < len(BUCKET_ORDER) else f"class_{i}"
+            # Keep human-readable label in the dict for display, safe key for MLflow
             metrics[f"f1_{label}"] = float(f1_val)
+            metrics[f"f1_mlflow_{safe_key}"] = float(f1_val)
 
         return metrics
 

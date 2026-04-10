@@ -61,6 +61,34 @@ DATA_RAW = ROOT / "data" / "raw" / "time_spent_tasks.parquet"
 FIG_DIR  = ROOT / "docs" / "figures" / "time_spent"
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 
+# -- Config & versioning -----------------------------------------------------
+import json as _json
+import yaml as _yaml
+import hashlib as _hashlib
+import shutil as _shutil
+
+with open(ROOT / "configs" / "config.yaml", encoding="utf-8") as _f:
+    _CFG = _yaml.safe_load(_f)
+
+DATA_VERSION = _CFG["data"]["version"]
+REPORTS_DIR  = ROOT / _CFG["eda"]["reports_dir"]
+REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Load extraction metadata if available
+_META_PATH = ROOT / _CFG["data"]["raw_dir"] / "time_spent_tasks_metadata.json"
+_EXTRACTION_META: dict = {}
+if _META_PATH.exists():
+    with open(_META_PATH, encoding="utf-8") as _f:
+        _EXTRACTION_META = _json.load(_f)
+    print(f"Extraction metadata loaded: {_META_PATH.name}")
+    print(f"  SHA-256   : {_EXTRACTION_META.get('sha256', 'N/A')[:32]}...")
+    print(f"  Timestamp : {_EXTRACTION_META.get('extraction_timestamp', 'N/A')}")
+    print(f"  Row count : {_EXTRACTION_META.get('row_count', 'N/A')}")
+else:
+    print(f"WARNING: extraction metadata not found at {_META_PATH}")
+
+print(f"Data version : {DATA_VERSION}")
+
 # -- Plot style --------------------------------------------------------------
 sns.set_theme(style="whitegrid", palette="muted", font_scale=1.1)
 # Sequential palette for duration buckets (cool → warm = short → long)
@@ -1137,6 +1165,17 @@ print(f"Processed data saved to: {PROCESSED_PATH}")
 print(f"Shape: {df_save.shape}")
 print(f"Columns: {df_save.columns.tolist()}")
 
+# Compute SHA-256 of the processed parquet for downstream traceability
+def _sha256_file(p):
+    h = _hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+PROCESSED_SHA256 = _sha256_file(PROCESSED_PATH)
+print(f"Processed parquet SHA-256: {PROCESSED_SHA256[:32]}...")
+
 # %% [markdown]
 # ## 14. Feature Ranking Summary
 
@@ -1162,3 +1201,198 @@ print(f"\n--- VARIANCE DECOMPOSITION ---")
 print(f"  ICC = {icc:.4f} ({icc*100:.1f}% between-task systematic)")
 print(f"  Within-task CV range: {task_cv['cv'].min():.2f} – {task_cv['cv'].max():.2f}")
 print(f"  Zero-variance tasks: {len(zero_var[zero_var['count'] >= 2])}")
+
+# %% [markdown]
+# ## 15. Versioned Figure Copies & EDA Report
+
+# %%
+# ── 15.1 Copy figures with version suffix ─────────────────────────────────
+# Canonical figures in docs/figures/time_spent/<name>.png are always overwritten.
+# Versioned copies in the same dir as <name>_<version>.png are never overwritten
+# so the snapshot for each data version is preserved.
+for _png in sorted(FIG_DIR.glob("*.png")):
+    # Skip files that already have a version suffix (e.g. _2026-04-06.png)
+    if DATA_VERSION in _png.stem:
+        continue
+    _versioned = FIG_DIR / f"{_png.stem}_{DATA_VERSION}.png"
+    _shutil.copy2(_png, _versioned)
+
+print(f"Versioned figure copies written to {FIG_DIR} (suffix: _{DATA_VERSION})")
+
+# ── 15.2 Build markdown EDA report ────────────────────────────────────────
+# Capture key statistics computed throughout the script into a structured report.
+# Both a versioned copy and a canonical copy are written.
+
+_raw_sha = _EXTRACTION_META.get("sha256", "N/A")
+_raw_ts  = _EXTRACTION_META.get("extraction_timestamp", "N/A")
+_raw_dr  = _EXTRACTION_META.get("date_range", {})
+_n_raw   = _EXTRACTION_META.get("row_count", len(df))
+
+_bucket_dist = df["duration_bucket"].value_counts().reindex(BUCKET_ORDER)
+
+_report_lines = [
+    f"# EDA Report — Time Spent (Time Bucket Classification)",
+    f"",
+    f"**Data version**: `{DATA_VERSION}`  ",
+    f"**Generated**: `{__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}`  ",
+    f"**Raw parquet SHA-256**: `{_raw_sha}`  ",
+    f"**Extraction timestamp**: `{_raw_ts}`  ",
+    f"**Processed parquet SHA-256**: `{PROCESSED_SHA256}`  ",
+    f"",
+    f"---",
+    f"",
+    f"## 1. Dataset Overview",
+    f"",
+    f"| Property | Value |",
+    f"|---|---|",
+    f"| Raw rows (after transform) | {_n_raw:,} |",
+    f"| Date range | {_raw_dr.get('min','N/A')} → {_raw_dr.get('max','N/A')} |",
+    f"| Unique projects | {df['project_code'].nunique()} |",
+    f"| Unique task descriptions | {df['task_description'].nunique()} |",
+    f"| Processed shape | {df_save.shape[0]:,} rows × {df_save.shape[1]} cols |",
+    f"",
+    f"---",
+    f"",
+    f"## 2. Target Distribution — Duration Buckets",
+    f"",
+    f"```",
+]
+
+for _b, _cnt in _bucket_dist.items():
+    _report_lines.append(f"  {_b:<12}: {_cnt:>4}  ({_cnt / len(df) * 100:.1f}%)")
+
+_maj_acc = _bucket_dist.max() / len(df) * 100
+_report_lines += [
+    f"```",
+    f"",
+    f"- **Majority class baseline accuracy**: {_maj_acc:.1f}%",
+    f"- **Imbalance note**: minority classes (31–60 min, >60 min) have < 2% each — SMOTE required",
+    f"",
+    f"---",
+    f"",
+    f"## 3. Feature Effect Sizes",
+    f"",
+    f"### 3.1 Categorical / Binary Features (Kruskal-Wallis η² or Mann-Whitney p)",
+    f"",
+    f"```",
+]
+
+for _r in sorted(categorical_summary, key=lambda x: x["p"]):
+    _sig = "***" if _r["p"] < 0.001 else "**" if _r["p"] < 0.01 else "*" if _r["p"] < 0.05 else "n.s."
+    _eta_s = f"eta2={_r['eta2']:.4f}" if _r["eta2"] is not None else "—"
+    _report_lines.append(
+        f"  {_r['feature']:<22} {_r['test']:<18} {_eta_s:<18} p={_r['p']:.4e}  {_sig}"
+    )
+
+_report_lines += [
+    f"```",
+    f"",
+    f"### 3.2 Continuous Features (Spearman ρ with log1p(duration))",
+    f"",
+    f"```",
+]
+
+for _, _row in sp_summary.iterrows():
+    _report_lines.append(
+        f"  {_row['feature']:<25}  rho={_row['rho']:+.4f}  p={_row['p']:.4e}  {_row['sig']}"
+    )
+
+_report_lines += [
+    f"```",
+    f"",
+    f"### 3.3 Top TF-IDF Features (Spearman ρ with log_duration)",
+    f"",
+    f"```",
+]
+for _, _row in sp_df.head(10).iterrows():
+    _report_lines.append(
+        f"  {_row['feature']:<30}  rho={_row['rho']:+.4f}  p={_row['p']:.4e}"
+    )
+
+_report_lines += [
+    f"```",
+    f"",
+    f"---",
+    f"",
+    f"## 4. Variance Decomposition (Regression Ceiling)",
+    f"",
+    f"```",
+    f"  Between-task variance : {between_var:.4f}",
+    f"  Within-task variance  : {within_var:.4f}",
+    f"  ICC                   : {icc:.4f}  ({icc*100:.1f}% systematic, {(1-icc)*100:.1f}% noise)",
+    f"  Within-task CV range  : {task_cv['cv'].min():.2f} – {task_cv['cv'].max():.2f}",
+    f"  Zero-variance tasks   : {len(zero_var[zero_var['count'] >= 2])}",
+    f"```",
+    f"",
+    f"---",
+    f"",
+    f"## 5. Project Summary",
+    f"",
+    f"```",
+    proj_stats[["count","median","mean","std","cv"]].to_string(),
+    f"```",
+    f"",
+    f"---",
+    f"",
+    f"## 6. Task Type Summary",
+    f"",
+    f"```",
+    tasktype_stats[["count","median","mean","std","cv"]].to_string(),
+    f"```",
+    f"",
+    f"---",
+    f"",
+    f"## 7. Key Findings",
+    f"",
+    f"1. **task_type** is the single strongest predictor (η²={eta2_tt:.3f}) — exercise tasks (≤2 min) vs development (>15 min).",
+    f"2. **has_number** flag (ρ≈-0.3) cleanly separates exercise reps (short) from all others.",
+    f"3. **task_cv** (within-task coefficient of variation) captures predictability — lower CV = more consistent duration.",
+    f"4. **Text features** (TF-IDF) provide strong bucket-level discrimination — specific terms lock into specific durations.",
+    f"5. **SBM project bimodality** (admin ≤30 min vs strategic >60 min) requires text to disambiguate.",
+    f"6. **ICC = {icc:.3f}** — {icc*100:.0f}% of log-duration variance is systematic (between-task), theoretical ceiling for ML.",
+    f"7. **Minority classes** (31–60 min={_bucket_dist.get('31–60 min',0)}, >60 min={_bucket_dist.get('>60 min',0)}) require SMOTE or class_weight='balanced'.",
+    f"",
+    f"---",
+    f"",
+    f"## 8. Features Selected for Model 3b",
+    f"",
+    f"| Feature | Type | Encoding | Note |",
+    f"|---|---|---|---|",
+    f"| task_type | categorical (7) | OrdinalEncoder (duration-ordered) | Strongest predictor |",
+    f"| has_number | binary | passthrough | Exercise proxy |",
+    f"| task_cv | numeric | RobustScaler | Per-fold imputed |",
+    f"| project_code | categorical | SafeTargetEncoder | Per-fold, leak-safe |",
+    f"| task_freq | numeric | log1p + RobustScaler | Repetition signal |",
+    f"| is_repeated_task | binary | passthrough | — |",
+    f"| day_of_week | numeric (0–6) | CyclicalEncoder (period=7) | — |",
+    f"| desc_char_len | numeric | log1p + RobustScaler | — |",
+    f"| desc_clean | text | TF-IDF/BoW + optional LSA | Strong bucket signal |",
+    f"| task_type_x_repeated | categorical (14) | OrdinalEncoder | Interaction feature |",
+    f"| is_long_project | binary | passthrough | SBM/ACELEN/PHD flag |",
+    f"| log_task_freq | numeric | RobustScaler | Compressed freq |",
+    f"| desc_has_time_ref | binary | passthrough | Time hint in text |",
+    f"| task_median_duration | numeric | RobustScaler | Per-fold imputed |",
+    f"",
+    f"**Excluded**: `is_overdue`, `duration_minutes` (target), `log_duration` (target), `project_category` (p=0.31), `is_weekend` (p=0.31), `month` (p=0.07), `desc_word_count` (p=0.15).",
+    f"",
+    f"---",
+    f"",
+    f"*Report auto-generated by `notebooks/eda_time_spent.py` — do not edit manually.*",
+]
+
+_report_text = "\n".join(_report_lines)
+
+# Write versioned report (never overwritten)
+_versioned_report = REPORTS_DIR / f"eda_time_spent_report_{DATA_VERSION}.md"
+if not _versioned_report.exists():
+    _versioned_report.write_text(_report_text, encoding="utf-8")
+    print(f"Versioned report written: {_versioned_report.name}")
+else:
+    print(f"Versioned report already exists (skipping): {_versioned_report.name}")
+
+# Write canonical report (always overwritten)
+_canonical_report = REPORTS_DIR / "eda_time_spent_report.md"
+_canonical_report.write_text(_report_text, encoding="utf-8")
+print(f"Canonical report written : {_canonical_report.name}")
+
+print(f"\nEDA complete — data version {DATA_VERSION}")

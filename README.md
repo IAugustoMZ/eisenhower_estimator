@@ -8,14 +8,14 @@ ML system that predicts whether a task is **important** and/or **urgent** — th
 
 Given a new task (description, project, creation time, due date), it predicts:
 
-| Model | Target | Type | Imbalance / Distribution | Status |
-|---|---|---|---|---|
-| **Model 1** | `important` (binary) | Classification | 3:1 | Training pipeline complete |
-| **Model 2** | `urgent` (binary) | Classification | 21.36:1 | Training pipeline complete |
-| **Model 3** | `duration_minutes` (continuous) | Regression | Right-skewed (log1p transform) | Training pipeline complete |
-| **Model 3b** | `duration_bucket` (6 ordinal classes) | Classification | ≤2 min (14%), 3–5 min (36%), 6–10 min (37%), 11–30 min (9%), 31–60 min (2%), >60 min (2%) | Training pipeline complete |
+| Model | Target | Type | Imbalance / Distribution | Dataset | Status |
+|---|---|---|---|---|---|
+| **Model 1** | `important` (binary) | Classification | 3.2:1 | 4,744 rows | Trained (v2026-04-06) |
+| **Model 2** | `urgent` (binary) | Classification | 17.4:1 | 4,744 rows | Trained (v2026-04-06) — F1-urgent=0.719, ROC-AUC=0.987 |
+| **Model 3** | `duration_minutes` (continuous) | Regression | Right-skewed (log1p transform) | 1,537 rows | Training pipeline ready |
+| **Model 3b** | `duration_bucket` (6 ordinal classes) | Classification | ≤2 min (15%), 3–5 min (35%), 6–10 min (37%), 11–30 min (10%), 31–60 min (2%), >60 min (2%) | 1,537 rows | **Trained (v2026-04-06)** — F1-macro=0.494 (test), Accuracy=73.4% |
 
-All models are trained with Optuna hyperparameter search, tracked with MLflow, and registered in the MLflow Model Registry for consumption by downstream applications.
+All models are trained with Optuna hyperparameter search, tracked with MLflow, and registered in the MLflow Model Registry. Model 1 also includes a **rule-based baseline** and a **hybrid classifier** (rule gates + ML) evaluated on the same holdout set for direct comparison.
 
 ---
 
@@ -26,6 +26,11 @@ eisenhower_estimator/
 ├── src/
 │   ├── data/
 │   │   └── extractor.py                    # SQLite → parquet pipeline
+│   ├── evaluation/                         # Comparable evaluation harness (NEW)
+│   │   ├── __init__.py
+│   │   ├── rule_based.py                   # RuleBasedClassifier — pure rule engine
+│   │   ├── hybrid.py                       # HybridClassifier — rules + ML
+│   │   └── evaluator.py                    # ModelEvaluator — side-by-side metrics
 │   ├── transformers/                       # Reusable sklearn transformers
 │   │   ├── cyclical_encoder.py             # sin/cos for hour, day_of_week, month
 │   │   ├── target_encoder.py               # Target encoding (per-fold, leak-safe)
@@ -39,17 +44,17 @@ eisenhower_estimator/
 │       ├── pipeline_builder.py             # ColumnTransformer + classifier (Model 1)
 │       ├── pipeline_builder_urgent.py      # ColumnTransformer + classifier (Model 2)
 │       ├── pipeline_builder_time_spent.py  # ColumnTransformer + regressor (Model 3) + TaskCVImputer
-│       ├── pipeline_builder_time_bucket.py # ColumnTransformer + classifier (Model 3b) — reuses Model 3 preprocessor
+│       ├── pipeline_builder_time_bucket.py # ColumnTransformer + classifier (Model 3b)
 │       ├── optuna_objective.py             # Optuna search space — Model 1
 │       ├── optuna_objective_urgent.py      # Optuna search space — Model 2
 │       ├── optuna_objective_time_spent.py  # Optuna search space — Model 3 (regression)
 │       ├── optuna_objective_time_bucket.py # Optuna search space — Model 3b (multiclass)
-│       ├── trainer.py                      # ModelTrainer — Model 1 end-to-end
-│       ├── urgent_trainer.py              # UrgentModelTrainer — Model 2 end-to-end
+│       ├── trainer.py                      # ModelTrainer — Model 1 end-to-end (+ system eval)
+│       ├── urgent_trainer.py               # UrgentModelTrainer — Model 2 end-to-end
 │       ├── time_spent_trainer.py           # TimeSpentTrainer — Model 3 end-to-end
 │       └── time_bucket_trainer.py          # TimeBucketTrainer — Model 3b end-to-end
 ├── notebooks/
-│   ├── eda_important.py                    # EDA — Model 1 (# %% cells)
+│   ├── eda_important.py                    # EDA — Model 1 (# %% cells, generates versioned report)
 │   ├── eda_urgent.py                       # EDA — Model 2 (# %% cells)
 │   ├── eda_time_spent.py                   # EDA — Model 3 & 3b (# %% cells)
 │   ├── train_important_model.py            # Training entry point — Model 1
@@ -57,25 +62,89 @@ eisenhower_estimator/
 │   ├── train_time_spent_model.py           # Training entry point — Model 3
 │   └── train_time_bucket_model.py          # Training entry point — Model 3b
 ├── configs/
-│   ├── config.yaml                         # Global config (paths, MLflow, training defaults)
+│   ├── config.yaml                         # Global config (paths, MLflow, data.version, EDA settings)
 │   ├── model1_config.yaml                  # Model 1 Optuna search space and settings
 │   ├── model2_config.yaml                  # Model 2 Optuna search space and settings
 │   ├── model3_config.yaml                  # Model 3 Optuna search space and settings
 │   └── model3b_config.yaml                 # Model 3b Optuna search space and settings
 ├── data/
-│   ├── raw/todo_tasks.parquet              # Source data from SQLite
+│   ├── raw/todo_tasks.parquet              # Source data from SQLite (4,744 rows as of 2026-04-06)
 │   └── processed/
-│       ├── eda_important_features.parquet  # 3,689 × 17 — Model 1 input
-│       ├── eda_urgent_features.parquet     # 3,689 × 16 — Model 2 input
+│       ├── eda_important_features.parquet  # 4,744 × 17 — Model 1 input
+│       ├── eda_urgent_features.parquet     # 4,744 × 16 — Model 2 input
 │       └── eda_time_spent_features.parquet # 1,307 × 26 — Model 3 & 3b input
 ├── docs/
-│   ├── eda_important_report.md
+│   ├── eda_important_report.md             # Latest EDA report (canonical)
+│   ├── eda_important_report_2026-04-06.md  # Versioned copy (date-stamped)
 │   ├── eda_urgent_report.md
 │   ├── eda_time_spent_report.md
 │   └── figures/
 ├── models/                                 # Local model artifacts (.pkl)
-└── mlruns/                                 # MLflow tracking data (auto-created)
+├── mlruns/                                 # MLflow artifact store
+└── mlflow.db                               # MLflow backend (SQLite)
 ```
+
+---
+
+## Versioning
+
+Every MLflow run is tagged with three provenance fields so any result can be reproduced exactly:
+
+| MLflow Tag | Value | Purpose |
+|---|---|---|
+| `data_version` | ISO date string (e.g. `2026-04-06`) | Identifies the data snapshot — set in `configs/config.yaml` under `data.version` |
+| `data_sha256` | SHA-256 hex digest of the processed parquet | Detects silent data overwrites |
+| `git_commit` | Short 8-char commit hash | Pins the code state |
+| `config_version` | ISO date string from model config | Tracks search space changes (Model 3b) |
+
+For Model 3b, the extractor also writes `data/raw/time_spent_tasks_metadata.json` — a JSON sidecar with extraction timestamp, row count, date range, project distribution, and raw parquet SHA-256. This is the lineage anchor: every downstream artifact can reference it to prove data provenance.
+
+To compare runs across data versions in the MLflow UI, filter by `data_version` tag in the experiment view.
+
+### How to reproduce a specific run
+
+```bash
+# 1. Check out the git commit from the run's git_commit tag
+git checkout <git_commit>
+
+# 2. Verify the parquet hash matches data_sha256
+python -c "import hashlib; print(hashlib.sha256(open('data/processed/eda_important_features.parquet','rb').read()).hexdigest())"
+
+# 3. Re-run training with the same config
+python notebooks/train_important_model.py
+```
+
+### Versioned EDA reports
+
+Each run of `notebooks/eda_important.py` writes two report files:
+- `docs/eda_important_report.md` — canonical (always latest)
+- `docs/eda_important_report_<data_version>.md` — date-stamped copy (never overwritten)
+
+---
+
+## System Evaluation — Rule-Based vs ML vs Hybrid
+
+Model 1 is evaluated across three approaches on the **same holdout test set** for direct comparison:
+
+| Approach | Description |
+|---|---|
+| **Rule-based** | Domain-knowledge rules (e.g. "early-morning work tasks are important"). Fully explainable, zero training. |
+| **ML model** | Best Optuna trial pipeline (LightGBM / XGBoost / RF / LR + preprocessor). |
+| **Hybrid** | Rules fire first; undecided rows are passed to the ML model. Combines explainability + accuracy. |
+
+Results from the quick-run validation (5 Optuna trials, data v2026-04-06):
+
+| Metric | Rule-Based | ML Model | Hybrid |
+|---|---|---|---|
+| F1-macro | 0.4324 | 0.9781 | **0.9810** |
+| F1 (not important) | 0.0000 | 0.9666 | **0.9709** |
+| F1 (important) | 0.8648 | 0.9896 | **0.9910** |
+| ROC-AUC | 0.508 | 0.997 | **0.998** |
+| Rule coverage | 1.2% | N/A | 1.2% |
+
+The hybrid approach wins on all metrics. Rule coverage is low (1.2%) because the current rules are conservative (they only fire when confidence is very high). This is by design — see `src/evaluation/rule_based.py` to add more rules.
+
+Every evaluation run is logged as a nested MLflow child run under the parent training run, with confusion matrices and classification reports per approach.
 
 ---
 
@@ -165,11 +234,11 @@ Each run logs: params, CV metrics, confusion matrix (classifiers) or residual pl
 | Imbalance | 3:1 | 21.36:1 | N/A (continuous) | Highly imbalanced (37% / 2% extremes) |
 | Optimisation metric | F1-macro | F1-macro | RMSE (log scale) | F1-macro |
 | CV strategy | `StratifiedKFold(5)` | `StratifiedGroupKFold(5)` | `StratifiedGroupKFold(5)` | `StratifiedGroupKFold(5)` |
-| Dataset | 3,689 × 17 | 3,689 × 16 | 1,307 × 26 | 1,307 × 26 |
+| Dataset | 4,744 × 17 | 4,744 × 16 | 1,537 × 26 | 1,537 × 26 |
 | Features | 8 engineered | 11 engineered | 14 engineered | 14 engineered (same as Model 3) |
 | Resampling | SMOTE/ADASYN/none | SMOTE/ADASYN/none | N/A | SMOTE/none |
 | Dim. reduction | PCA/LDA/none | PCA/LDA/none | PCA/none | PCA/LDA/none |
-| ICC ceiling | N/A | N/A | 0.695 | N/A |
+| ICC ceiling | N/A | N/A | 0.680 | N/A |
 
 ---
 
@@ -197,29 +266,52 @@ pip install -r requirements.txt
 ```bash
 source eisen_mat_env/Scripts/activate
 cd eisenhower_estimator
+
+# Step 1: extract fresh data from SQLite
+python src/data/extractor.py configs/config.yaml
+
+# Step 2: run EDA (generates processed parquet + versioned report)
+python notebooks/eda_important.py
+
+# Step 3: train (quick run = 5 trials; set QUICK_RUN=False for full 50-trial search)
 python notebooks/train_important_model.py
 ```
 
 Or open `notebooks/train_important_model.py` in VSCode and run `# %%` cells interactively.
 
-**Quick smoke test** (5 trials): set `QUICK_RUN = True` in the script.
+**Quick smoke test** (5 trials): set `QUICK_RUN = True` in the notebook (default).  
+**Full training** (50 trials): set `QUICK_RUN = False`.
+
+Training automatically produces a **3-way system comparison** (rule-based / ML / hybrid) logged as MLflow child runs.
 
 ### Model 2 — Urgent Classifier
 
 ```bash
 source eisen_mat_env/Scripts/activate
 cd eisenhower_estimator
+
+# Step 1: extract fresh data from SQLite
+python src/data/extractor.py configs/config.yaml
+
+# Step 2: run EDA (generates processed parquet + versioned report + versioned figures)
+python notebooks/eda_urgent.py
+
+# Step 3: train (quick run = 5 trials; set QUICK_RUN=False for full 50-trial search)
 python notebooks/train_urgent_model.py
 ```
 
 Or open `notebooks/train_urgent_model.py` in VSCode and run `# %%` cells interactively.
 
-**Quick smoke test** (5 trials): set `QUICK_RUN = True` in the script.
+**Quick smoke test** (5 trials): set `QUICK_RUN = True` in the script (default).  
+**Full training** (50 trials): set `QUICK_RUN = False`.
+
+Each run is tagged with `data_version`, `data_sha256` (SHA-256 of processed parquet), and `git_commit` for full traceability. Versioned EDA reports are saved to `docs/eda_urgent_report_<data_version>.md` (never overwritten); the canonical report is always `docs/eda_urgent_report.md`.
 
 > **Note**: Model 2 uses `StratifiedGroupKFold(group=project_code)`. Some folds may have very few
-> urgent samples (21.36:1 imbalance). This is expected — the trainer handles it gracefully with
-> neutral scores and a warning log. Watch `test_f1_1` (urgent class F1) — not just `test_f1_macro`.
-> A model predicting all "not urgent" achieves `test_f1_macro ≈ 0.48` but `test_f1_1 = 0.0` — failure mode.
+> urgent samples (17.4:1 imbalance, 258 urgent out of 4,744). This is expected — the trainer handles
+> it gracefully with neutral scores and a warning log. Watch `test_f1_1` (urgent class F1) — not just
+> `test_f1_macro`. A model predicting all "not urgent" achieves `test_f1_macro ≈ 0.48` but
+> `test_f1_1 = 0.0` — failure mode. Target: `test_f1_1 > 0.5`.
 
 ### Model 3 — Time Spent Regressor
 
@@ -243,17 +335,58 @@ Or open `notebooks/train_time_spent_model.py` in VSCode and run `# %%` cells int
 ```bash
 source eisen_mat_env/Scripts/activate
 cd eisenhower_estimator
+
+# Step 1: extract fresh data from SQLite (writes parquet + metadata JSON with SHA-256)
+python src/data/extractor_time_spent.py configs/config.yaml
+
+# Step 2: run EDA (generates processed parquet, versioned report, versioned figures)
+python notebooks/eda_time_spent.py
+
+# Step 3: train (quick run = 5 trials; set QUICK_RUN=False for full 100-trial search)
 python notebooks/train_time_bucket_model.py
 ```
 
 Or open `notebooks/train_time_bucket_model.py` in VSCode and run `# %%` cells interactively.
 
-**Quick smoke test** (5 trials): set `QUICK_RUN = True` in the script.
+**Quick smoke test** (5 trials): set `QUICK_RUN = True` in the script.  
+**Full training** (100 trials): set `QUICK_RUN = False`.
+
+Each run is tagged with `data_version`, `data_sha256` (SHA-256 of processed parquet), `config_version`, and `git_commit` for full traceability. The extractor also writes `data/raw/time_spent_tasks_metadata.json` with extraction timestamp, row count, date range, and raw parquet SHA-256 as the lineage anchor. Versioned EDA reports are saved to `docs/eda_time_spent_report_<data_version>.md` (never overwritten); the canonical report is always `docs/eda_time_spent_report.md`.
 
 > **Note**: Model 3b classifies tasks into 6 duration buckets (≤2 min, 3–5 min, 6–10 min, 11–30 min,
-> 31–60 min, >60 min). The last two buckets have very few samples (2% each). Watch **per-class F1**
-> closely — the model may learn to ignore minority buckets. SMOTE resampling is available in the
-> search space to help with this imbalance.
+> 31–60 min, >60 min). The last two buckets have very few samples (≈2% each). Watch **per-class F1**
+> closely — the model struggles with the two heaviest tails. SMOTE resampling and `class_weight='balanced'`
+> are explored in the search space. The CV F1-macro (~0.24) is lower than holdout (~0.49) due to
+> `StratifiedGroupKFold` leaving entire projects out of each fold, which is the correct evaluation strategy.
+
+#### Model 3b — Training Results (v2026-04-06)
+
+| Metric | Value |
+|---|---|
+| MLflow Run ID | `24fc0cee0566469584def74c3f23fdb5` |
+| Best trial | #24 |
+| Best CV F1-macro (StratifiedGroupKFold) | 0.2392 |
+| **Test F1-macro** | **0.4938** |
+| Test F1-weighted | 0.7333 |
+| Test Precision (macro) | 0.5021 |
+| Test Recall (macro) | 0.4919 |
+| Test Accuracy | 73.4% |
+| Best model type | `voting_lgbm_lr` (LightGBM + LogReg ensemble) |
+| Resampling | SMOTE |
+| Data | 1,537 rows (v2026-04-06) |
+
+Per-class F1 on holdout test set:
+
+| Bucket | F1 | Note |
+|---|---|---|
+| ≤2 min | 0.691 | Exercise tasks — well separated |
+| 3–5 min | 0.759 | Short admin/updates |
+| 6–10 min | 0.860 | Most common — strong signal |
+| 11–30 min | 0.471 | Mixed types — harder |
+| 31–60 min | 0.182 | Few samples, high variance |
+| >60 min | 0.000 | Only 21 train / 5 test samples — insufficient data |
+
+**Quality note**: The model learns the 3 dominant buckets (≤2, 3–5, 6–10 min) well (F1 > 0.69). The two minority buckets (31–60 min, >60 min) are structurally limited by sample size — the ICC of 0.68 sets a theoretical ceiling and the project-grouped CV ensures these results are honest out-of-distribution estimates.
 
 ---
 

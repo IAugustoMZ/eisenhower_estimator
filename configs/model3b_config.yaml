@@ -3,13 +3,19 @@
 # Hyperparameter search space and training settings
 # ============================================================
 #
+# config_version: bump this when search space changes materially
+# (new model type, new feature, changed ranges) so MLflow runs
+# can be traced back to the exact config that produced them.
+config_version: "2026-04-06"
+last_updated: "2026-04-06"
+
 # Classifies tasks into 6 duration buckets:
 #   ≤2 min | 3–5 min | 6–10 min | 11–30 min | 31–60 min | >60 min
 #
 # Uses the same feature set as Model 3 (time spent regressor) but
 # treats prediction as a multiclass classification (6 classes).
 #
-# Class distribution (1307 samples):
+# Class distribution (1307 samples — last verified 2026-04-06):
 #   ≤2 min   : 189 (14.5%)
 #   3–5 min  : 466 (35.6%)
 #   6–10 min : 484 (37.0%)

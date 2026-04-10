@@ -5,6 +5,11 @@ data:
   raw_dir: "data/raw"
   processed_dir: "data/processed"
   raw_filename: "todo_tasks.parquet"
+  time_spent_raw_filename: "time_spent_tasks.parquet"
+  time_spent_processed_filename: "eda_time_spent_features.parquet"
+  # Increment when schema or source DB changes in a breaking way.
+  # Use ISO date (YYYY-MM-DD) so every MLflow run is traceable to a data snapshot.
+  version: "2026-04-06"
 
 extraction:
   table: "todo_task"
@@ -22,6 +27,14 @@ extraction:
     - "updated_at"
     - "register_timesheet"
     - "completed_date"
+
+eda:
+  # Figures are saved to docs/figures/<model>/ and versioned alongside the report.
+  figures_dir: "docs/figures"
+  reports_dir: "docs"
+  dpi: 120
+  fig_width: 12
+  fig_height: 6
 
 mlflow:
   tracking_uri: "sqlite:///mlflow.db"
